@@ -54,17 +54,17 @@ def get_device_info(ip, passive, filter_expr):
         return None
 
 def sniff_passive(filter_expr):
+    devices = []
     def process_packet(packet):
         if ARP in packet and packet[ARP].op == 2:  # ARP response (is-at)
-            return {
+            devices.append({
                 "IP": packet[ARP].psrc,
                 "Hostname": "Unknown",
                 "MAC": packet[ARP].hwsrc,
                 "OS": "Unknown OS"
-            }
-        return None
-
+            })
     sniff(filter=filter_expr, prn=process_packet, store=0, timeout=10)
+    return devices
 
 def get_mac_address(ip):
     try:
@@ -119,6 +119,8 @@ def scan_network(ip_ranges, max_workers=100, sleep_time=0, count=1, hardcore=Fal
     
     layout["body"].update(table)
 
+    devices = []
+    
     with Live(layout, console=console, refresh_per_second=1):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
@@ -131,6 +133,7 @@ def scan_network(ip_ranges, max_workers=100, sleep_time=0, count=1, hardcore=Fal
             for future in as_completed(futures):
                 info = future.result()
                 if info:
+                    devices.append(info)
                     table.add_row(info["IP"], info["Hostname"], info["MAC"], info["OS"])
                     layout["body"].update(table)
                     if print_results:
@@ -141,10 +144,13 @@ def scan_network(ip_ranges, max_workers=100, sleep_time=0, count=1, hardcore=Fal
                     for future in as_completed(futures):
                         info = future.result()
                         if info:
+                            devices.append(info)
                             table.add_row(info["IP"], info["Hostname"], info["MAC"], info["OS"])
                             layout["body"].update(table)
                             if print_results:
                                 print(f"{info['IP']}\t{info['Hostname']}\t{info['MAC']}\t{info['OS']}")
+
+    return devices
 
 def main():
     parser = argparse.ArgumentParser(description="DrNetScanner - Network Scanning Tool")
@@ -178,7 +184,19 @@ def main():
             console.print("Unable to determine local network ranges.", style="bold red")
             return
 
-    scan_network(ip_ranges, args.workers, args.sleep, args.count, args.hardcore, args.passive, args.filter, args.print_results, args.listen, args.no_header)
+    devices = scan_network(ip_ranges, args.workers, args.sleep, args.count, args.hardcore, args.passive, args.filter, args.print_results, args.listen, args.no_header)
+    
+    # Print all results in a professional table at the end
+    table = Table(title="Final Scan Results")
+    table.add_column("IP Address", style="cyan", no_wrap=True)
+    table.add_column("Hostname", style="magenta")
+    table.add_column("MAC Address", style="green")
+    table.add_column("Operating System", style="yellow")
+
+    for device in devices:
+        table.add_row(device["IP"], device["Hostname"], device["MAC"], device["OS"])
+
+    console.print(table)
 
 if __name__ == "__main__":
     main()
