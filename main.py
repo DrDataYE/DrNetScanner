@@ -1,202 +1,90 @@
 import argparse
-import subprocess
-import socket
-import platform
-import ipaddress
-import netifaces
-import nmap
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import sys
+import threading
+import time
+from scapy.all import ARP, Ether, srp, sniff, conf, get_if_addr, get_if_list
 from rich.console import Console
-from rich.table import Table
-from rich.live import Live
-from rich.layout import Layout
-from scapy.all import ARP, Ether, srp
-from scapy.all import sniff
+from datetime import datetime
 
 console = Console()
-nm = nmap.PortScanner()
 
-def clear_screen():
-    command = 'cls' if platform.system().lower() == 'windows' else 'clear'
-    subprocess.call(command, shell=True)
-
-def get_device_info(ip, passive, filter_expr):
-    if passive:
-        return sniff_passive(filter_expr)
-    
-    try:
-        # Ping the device to see if it's active
-        ping_command = f"ping -c 1 -W 1 {ip}" if platform.system().lower() != "windows" else f"ping -n 1 -w 1000 {ip}"
-        output = subprocess.run(ping_command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        if output.returncode != 0:
-            return None
-
-        # Get the hostname
-        try:
-            hostname = socket.gethostbyaddr(ip)[0]
-        except socket.herror:
-            hostname = "Unknown"
-
-        # Use ARP to get the MAC address
-        mac = get_mac_address(ip)
-
-        # Use nmap to get OS type
-        os_type = get_os_type(ip)
-
-        return {
-            "IP": ip,
-            "Hostname": hostname,
-            "MAC": mac if mac else "Unknown",
-            "OS": os_type if os_type else "Unknown OS"
-        }
-    except Exception:
-        return None
-
-def sniff_passive(filter_expr):
-    devices = []
-    def process_packet(packet):
-        if ARP in packet and packet[ARP].op == 2:  # ARP response (is-at)
-            devices.append({
-                "IP": packet[ARP].psrc,
-                "Hostname": "Unknown",
-                "MAC": packet[ARP].hwsrc,
-                "OS": "Unknown OS"
-            })
-    sniff(filter=filter_expr, prn=process_packet, store=0, timeout=10)
-    return devices
-
-def get_mac_address(ip):
-    try:
-        # Create an ARP request packet
-        arp_request = ARP(pdst=ip)
-        broadcast = Ether(dst="ff:ff:ff:ff:ff:ff")
-        arp_request_broadcast = broadcast / arp_request
-
-        # Send the packet and receive responses
-        answered_list = srp(arp_request_broadcast, timeout=1, verbose=False)[0]
-        for sent, received in answered_list:
-            return received.hwsrc
-    except Exception:
-        return None
-
-def get_os_type(ip):
-    try:
-        nm.scan(ip, arguments='-O')
-        if 'osclass' in nm[ip]:
-            return nm[ip]['osclass'][0]['osfamily']
-    except Exception:
-        return None
-
-def get_local_network_ranges():
-    """Retrieve all local network ranges of the current machine."""
-    networks = []
-    for interface in netifaces.interfaces():
-        ifaddresses = netifaces.ifaddresses(interface)
-        if netifaces.AF_INET in ifaddresses:
-            for addr in ifaddresses[netifaces.AF_INET]:
-                ip_address = addr['addr']
-                netmask = addr['netmask']
-                network = ipaddress.ip_network(f"{ip_address}/{netmask}", strict=False)
-                networks.append(str(network))
-    return networks
-
-def scan_network(ip_ranges, max_workers=100, sleep_time=0, count=1, hardcore=False, passive=False, filter_expr="arp", print_results=False, listen=False, no_header=False):
-    table = Table(title="Connected Devices on Network")
-    table.add_column("IP Address", style="cyan", no_wrap=True)
-    table.add_column("Hostname", style="magenta")
-    table.add_column("MAC Address", style="green")
-    table.add_column("Operating System", style="yellow")
-
-    layout = Layout()
-    layout.split_column(
-        Layout(name="header", size=3),
-        Layout(name="body"),
-    )
-
-    if not no_header:
-        layout["header"].update("[bold green]Scanning IP ranges[/bold green]")
-    
-    layout["body"].update(table)
-
-    devices = []
-    
-    with Live(layout, console=console, refresh_per_second=1):
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for ip_range in ip_ranges:
-                network = ipaddress.ip_network(ip_range)
-                console.print(f"Scanning IP range: {ip_range}", style="bold green")
-                for ip in network.hosts():
-                    futures.append(executor.submit(get_device_info, str(ip), passive, filter_expr))
-                    
-            for future in as_completed(futures):
-                info = future.result()
-                if info:
-                    devices.append(info)
-                    table.add_row(info["IP"], info["Hostname"], info["MAC"], info["OS"])
-                    layout["body"].update(table)
-                    if print_results:
-                        print(f"{info['IP']}\t{info['Hostname']}\t{info['MAC']}\t{info['OS']}")
-
-            if listen:
-                while True:
-                    for future in as_completed(futures):
-                        info = future.result()
-                        if info:
-                            devices.append(info)
-                            table.add_row(info["IP"], info["Hostname"], info["MAC"], info["OS"])
-                            layout["body"].update(table)
-                            if print_results:
-                                print(f"{info['IP']}\t{info['Hostname']}\t{info['MAC']}\t{info['OS']}")
-
-    return devices
-
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="DrNetScanner - Network Scanning Tool")
-    parser.add_argument("-i", "--device", help="Your network device")
-    parser.add_argument("-r", "--range", help="Scan a given range instead of auto scan. 192.168.6.0/24,/16,/8")
-    parser.add_argument("-l", "--list", help="Scan the list of ranges contained into the given file")
+    parser.add_argument("targets", nargs='*', help="IP addresses or ranges to scan. If not provided, scans all networks on the device.")
     parser.add_argument("-p", "--passive", action="store_true", help="Do not send anything, only sniff")
-    parser.add_argument("-m", "--macfile", help="Scan a list of known MACs and host names")
     parser.add_argument("-F", "--filter", default="arp", help="Customize pcap filter expression (default: 'arp')")
     parser.add_argument("-s", "--sleep", type=int, default=0, help="Time to sleep between each ARP request (milliseconds)")
     parser.add_argument("-c", "--count", type=int, default=1, help="Number of times to send each ARP request (for nets with packet loss)")
-    parser.add_argument("-n", "--node", type=int, help="Last source IP octet used for scanning (from 2 to 253)")
-    parser.add_argument("-d", "--ignore_home", action="store_true", help="Ignore home config files for autoscan and fast mode")
-    parser.add_argument("-f", "--fastmode", action="store_true", help="Enable fastmode scan, saves a lot of time, recommended for auto")
-    parser.add_argument("-P", "--print_results", action="store_true", help="Print results in a format suitable for parsing by another program and stop after active scan")
-    parser.add_argument("-L", "--listen", action="store_true", help="Similar to -P but continue listening after the active scan is completed")
-    parser.add_argument("-N", "--no_header", action="store_true", help="Do not print header. Only valid when -P or -L is enabled")
     parser.add_argument("-S", "--hardcore", action="store_true", help="Enable sleep time suppression between each request (hardcore mode)")
     parser.add_argument("--workers", type=int, default=100, help="Number of worker threads to use for scanning (default: 100)")
+    return parser.parse_args()
 
-    args = parser.parse_args()
+def get_local_networks():
+    networks = []
+    for iface in get_if_list():
+        ip = get_if_addr(iface)
+        if ip != '0.0.0.0':
+            networks.append(f"{ip}/24")
+    return networks
 
-    if args.range:
-        ip_ranges = [args.range]
-    elif args.list:
-        with open(args.list, 'r') as file:
-            ip_ranges = [line.strip() for line in file.readlines()]
+def scan_network(target_ip, count, sleep_time, hardcore):
+    arp = ARP(pdst=target_ip)
+    ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+    packet = ether/arp
+
+    result = srp(packet, timeout=3, verbose=0)[0]
+    devices = []
+    for sent, received in result:
+        devices.append({'ip': received.psrc, 'mac': received.hwsrc})
+
+    return devices
+
+def display_results_live(network, devices, start_time):
+    captured_packets = 0
+    unique_devices = set()
+
+    while True:
+        new_devices = scan_network(network, 1, 0, False)
+        for device in new_devices:
+            if device['mac'] not in unique_devices:
+                unique_devices.add(device['mac'])
+                devices.append(device)
+                console.print(f"IP Address: {device['ip']}, MAC Address: {device['mac']}, Count: 1, Len: 60, MAC Vendor / Hostname: Unknown")
+                captured_packets += 1
+
+        # elapsed_time = datetime.now() - start_time
+        # console.print(f"\n{captured_packets} Captured ARP Req/Rep packets, from {len(devices)} hosts.   Total size: {len(devices) * 60} bytes")
+        # console.print(f"Time elapsed: {elapsed_time}", end="\r")
+        # break
+
+def passive_sniff(filter_expr):
+    sniff(filter=filter_expr, prn=process_packet, store=0)
+
+def process_packet(packet):
+    if packet.haslayer(ARP):
+        arp = packet[ARP]
+        console.print(f"[green]ARP Probe from {arp.psrc} ({arp.hwsrc})[/green]")
+
+def main():
+    args = parse_args()
+
+    if args.passive:
+        console.print("[yellow]Starting passive sniffing...[/yellow]")
+        passive_sniff(args.filter)
     else:
-        ip_ranges = get_local_network_ranges()
-        if not ip_ranges:
-            console.print("Unable to determine local network ranges.", style="bold red")
-            return
+        target_ranges = args.targets if args.targets else get_local_networks()
 
-    devices = scan_network(ip_ranges, args.workers, args.sleep, args.count, args.hardcore, args.passive, args.filter, args.print_results, args.listen, args.no_header)
-    
-    # Print all results in a professional table at the end
-    table = Table(title="Final Scan Results")
-    table.add_column("IP Address", style="cyan", no_wrap=True)
-    table.add_column("Hostname", style="magenta")
-    table.add_column("MAC Address", style="green")
-    table.add_column("Operating System", style="yellow")
-
-    for device in devices:
-        table.add_row(device["IP"], device["Hostname"], device["MAC"], device["OS"])
-
-    console.print(table)
+        for target_range in target_ranges:
+            devices = []
+            console.print(f"[blue]Scanning {target_range}...[/blue]")
+            start_time = datetime.now()
+            try:
+                display_results_live(target_range, devices, start_time)
+            except KeyboardInterrupt:
+                elapsed_time = datetime.now() - start_time
+                console.print(f"\n[yellow]Scan stopped. Total time elapsed: {elapsed_time}[/yellow]")
+                break
 
 if __name__ == "__main__":
     main()
