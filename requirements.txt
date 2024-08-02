@@ -1,1 +1,4 @@
-netifaces
+requests
+getmac
+python-nmap
+rich

@@ -3,7 +3,6 @@ import getmac
 import nmap
 import socket
 import argparse
-import platform
 import time
 from requests import get
 from rich import box
