@@ -3,6 +3,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.panel import Panel
 
+
 # تهيئة rich console
 console = Console()
 

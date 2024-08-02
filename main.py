@@ -1,90 +1,128 @@
+#!/usr/bin/python3
+import getmac
+import nmap
+import socket
 import argparse
-import os
-import sys
-import threading
+import platform
 import time
-from scapy.all import ARP, Ether, srp, sniff, conf, get_if_addr, get_if_list
+
+from requests import get
+from rich import box
+from rich.live import Live
+from rich.table import Table
 from rich.console import Console
-from datetime import datetime
+from rich.progress import Progress
 
 console = Console()
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="DrNetScanner - Network Scanning Tool")
-    parser.add_argument("targets", nargs='*', help="IP addresses or ranges to scan. If not provided, scans all networks on the device.")
-    parser.add_argument("-p", "--passive", action="store_true", help="Do not send anything, only sniff")
-    parser.add_argument("-F", "--filter", default="arp", help="Customize pcap filter expression (default: 'arp')")
-    parser.add_argument("-s", "--sleep", type=int, default=0, help="Time to sleep between each ARP request (milliseconds)")
-    parser.add_argument("-c", "--count", type=int, default=1, help="Number of times to send each ARP request (for nets with packet loss)")
-    parser.add_argument("-S", "--hardcore", action="store_true", help="Enable sleep time suppression between each request (hardcore mode)")
-    parser.add_argument("--workers", type=int, default=100, help="Number of worker threads to use for scanning (default: 100)")
-    return parser.parse_args()
+class networkInfo:
+    def __init__(self, subnet=None):
+        self.subnet = subnet or self.get_default_subnet()
+        self.Nmap = nmap.PortScanner()
 
-def get_local_networks():
-    networks = []
-    for iface in get_if_list():
-        ip = get_if_addr(iface)
-        if ip != '0.0.0.0':
-            networks.append(f"{ip}/24")
-    return networks
+    def get_default_subnet(self):
+        hosts = self.internal_ip.split('.')
+        return '.'.join(hosts[:-1]) + '.0/24'
 
-def scan_network(target_ip, count, sleep_time, hardcore):
-    arp = ARP(pdst=target_ip)
-    ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-    packet = ether/arp
+    @property
+    def internal_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
 
-    result = srp(packet, timeout=3, verbose=0)[0]
-    devices = []
-    for sent, received in result:
-        devices.append({'ip': received.psrc, 'mac': received.hwsrc})
+    @property
+    def external_ip(self):
+        return get('http://ipinfo.io/json').json()
 
-    return devices
+    def get_os_info(self, ip):
+        if 'osmatch' in self.Nmap[ip]:
+            return self.Nmap[ip]['osmatch'][0]['name']
+        return 'Unknown'
 
-def display_results_live(network, devices, start_time):
-    captured_packets = 0
-    unique_devices = set()
+    def IpInfo(self):
+        table = Table(expand=True, title='IP INFO', box=box.SQUARE_DOUBLE_HEAD)
+        table.add_column("Option", style='yellow')
+        table.add_column("Value", style='green')
 
-    while True:
-        new_devices = scan_network(network, 1, 0, False)
-        for device in new_devices:
-            if device['mac'] not in unique_devices:
-                unique_devices.add(device['mac'])
-                devices.append(device)
-                console.print(f"IP Address: {device['ip']}, MAC Address: {device['mac']}, Count: 1, Len: 60, MAC Vendor / Hostname: Unknown")
-                captured_packets += 1
+        with Live(table, refresh_per_second=1):
+            table.add_row("Internal", f"{self.internal_ip}")
+            for key, val in self.external_ip.items():
+                if key not in ['hostname', 'readme']:
+                    key = key.replace('ip', 'external')
+                    table.add_row(key, val)
+            time.sleep(1)  # Small delay to ensure table updates
 
-        # elapsed_time = datetime.now() - start_time
-        # console.print(f"\n{captured_packets} Captured ARP Req/Rep packets, from {len(devices)} hosts.   Total size: {len(devices) * 60} bytes")
-        # console.print(f"Time elapsed: {elapsed_time}", end="\r")
-        # break
+    def wifiUsers(self, include_os_info=False):
+        table = Table(expand=True, title='WIFI USERS', box=box.SQUARE_DOUBLE_HEAD, show_lines=True)
+        table.add_column("Device", style='cyan')
+        table.add_column("IP Address", style='green')
+        table.add_column("MAC Address", style='green')
+        if include_os_info:
+            table.add_column("OS Name", style='magenta')
 
-def passive_sniff(filter_expr):
-    sniff(filter=filter_expr, prn=process_packet, store=0)
+        with Live(table, refresh_per_second=1):
+            if include_os_info:
+                self.Nmap.scan(hosts=self.subnet, arguments='-O -T4 -F')  # Fast scan
+            else:
+                self.Nmap.scan(hosts=self.subnet, arguments='-T4 -F')  # Fast scan 
+            for ip in self.Nmap.all_hosts():
+                if ip.endswith('.1') or ip.endswith('.255'):
+                    continue
+                device_name = socket.getfqdn(ip)
+                device_name = '[red]Unknown' if device_name == ip else device_name
+                mac = getmac.get_mac_address(ip=ip)
+                row = [f"{device_name}", f"{ip}", f"{mac if mac else '[red]Unknown'}"]
+                if include_os_info:
+                    os_name = self.get_os_info(ip)
+                    row.append(os_name)
+                table.add_row(*row)
+                time.sleep(0.1)  # Small delay to ensure table updates
 
-def process_packet(packet):
-    if packet.haslayer(ARP):
-        arp = packet[ARP]
-        console.print(f"[green]ARP Probe from {arp.psrc} ({arp.hwsrc})[/green]")
+    def osInfo(self):
+        table = Table(expand=True, title='OS INFO', box=box.SQUARE_DOUBLE_HEAD)
+        table.add_column("Option", style='yellow')
+        table.add_column("Value", style='green')
+
+        os_name, os_version = platform.system(), platform.release()
+        table.add_row("OS Name", os_name)
+        table.add_row("OS Version", os_version)
+
+        with Live(table, refresh_per_second=1):
+            time.sleep(1)  # Small delay to ensure table updates
+
+def result(subnet=None):
+    return networkInfo(subnet=subnet)
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(description='Network Information Tool')
+    parser.add_argument('subnet', nargs='?', default=None, help='Specify the subnet to scan (e.g., 192.168.1.0/24)')
+    parser.add_argument('-i', '--info', action='store_true', help='Display IP information')
+    parser.add_argument('-w', '--wifi', action='store_true', help='Display WiFi users')
+    parser.add_argument('-a', '--all', action='store_true', help='Display All Options')
+    parser.add_argument('-o', '--os', action='store_true', help='Display OS information in WiFi users table')
+    
+    args = parser.parse_args()
+    
+    console.print("[bold magenta]DrNetScanner[/bold magenta]", justify="center")
 
-    if args.passive:
-        console.print("[yellow]Starting passive sniffing...[/yellow]")
-        passive_sniff(args.filter)
-    else:
-        target_ranges = args.targets if args.targets else get_local_networks()
+    if not (args.info or args.wifi or args.os):
+        args.info, args.wifi, args.os = False, True, False
 
-        for target_range in target_ranges:
-            devices = []
-            console.print(f"[blue]Scanning {target_range}...[/blue]")
-            start_time = datetime.now()
-            try:
-                display_results_live(target_range, devices, start_time)
-            except KeyboardInterrupt:
-                elapsed_time = datetime.now() - start_time
-                console.print(f"\n[yellow]Scan stopped. Total time elapsed: {elapsed_time}[/yellow]")
-                break
+    obj = result(subnet=args.subnet)
 
-if __name__ == "__main__":
+    if args.all:
+        args.info = True
+        args.wifi = False
+        args.os = True
+    
+    if args.info:
+        obj.IpInfo()
+    
+    if args.wifi or args.os:
+        obj.wifiUsers(include_os_info=args.os)
+    
+
+if __name__ == '__main__':
     main()
