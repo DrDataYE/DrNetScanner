@@ -1,3 +1,4 @@
+
 #!/usr/bin/python3
 import getmac
 import nmap
@@ -105,7 +106,19 @@ def main():
     
     args = parser.parse_args()
     
-    console.print("[bold magenta]DrNetScanner[/bold magenta]", justify="center")
+    console.print("""
+
+ ___      _  _     _   ___                            
+|   \ _ _| \| |___| |_/ __| __ __ _ _ _  _ _  ___ _ _ 
+| |) | '_| .` / -_)  _\__ \/ _/ _` | ' \| ' \/ -_) '_|
+|___/|_| |_|\_\___|\__|___/\__\__,_|_||_|_||_\___|_|                 
+""")
+    
+    console.print("""
+[[green]+[/]] Note: Created by [link=https://github.com/DrDataYE]@DrDataYE[/link] from Telegram Channel [link=https://t.me/LinuxArabe]LinuxArabe[/link],The Tool version 1.0
+""")
+
+    
 
     if not (args.info or args.wifi or args.os):
         args.info, args.wifi, args.os = False, True, False
@@ -117,24 +130,6 @@ def main():
         args.wifi = False
         args.os = True
         
-    console.print("""
-╔════════════════════════════════════════════════════════════════╗
-║                                                                ║
-║                                                                ║
-║                                                                ║
-║                                                                ║
-║                                                                ║
-║      ___      _  _     _   ___                                 ║
-║     |   \ _ _| \| |___| |_/ __| __ __ _ _ _  _ _  ___ _ _      ║
-║     | |) | '_| .` / -_)  _\__ \/ _/ _` | ' \| ' \/ -_) '_|     ║
-║     |___/|_| |_|\_\___|\__|___/\__\__,_|_||_|_||_\___|_|       ║
-║                                                                ║
-║                                 Made By @DrDataYE              ║
-║                                                                ║
-║                                                                ║
-║                                                                ║
-╚════════════════════════════════════════════════════════════════╝
-""")
     
     if args.info:
         obj.IpInfo()
@@ -142,6 +137,5 @@ def main():
     if args.wifi or args.os:
         obj.wifiUsers(include_os_info=args.os)
     
-
 if __name__ == '__main__':
     main()
