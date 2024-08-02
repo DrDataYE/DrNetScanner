@@ -1,4 +1,3 @@
-
 #!/usr/bin/python3
 import getmac
 import nmap
@@ -6,13 +5,12 @@ import socket
 import argparse
 import platform
 import time
-
 from requests import get
 from rich import box
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
-from rich.progress import Progress
+from threading import Thread
 
 console = Console()
 
@@ -38,7 +36,7 @@ class networkInfo:
         return get('http://ipinfo.io/json').json()
 
     def get_os_info(self, ip):
-        if 'osmatch' in self.Nmap[ip]:
+        if 'osmatch' in self.Nmap[ip] and len(self.Nmap[ip]['osmatch']) > 0:
             return self.Nmap[ip]['osmatch'][0]['name']
         return 'Unknown'
 
@@ -55,6 +53,17 @@ class networkInfo:
                     table.add_row(key, val)
             time.sleep(1)  # Small delay to ensure table updates
 
+    def scan_ip(self, ip, table, include_os_info):
+        device_name = socket.getfqdn(ip)
+        device_name = '[red]Unknown' if device_name == ip else device_name
+        mac = getmac.get_mac_address(ip=ip)
+        row = [f"{device_name}", f"{ip}", f"{mac if mac else '[red]Unknown'}"]
+        if include_os_info:
+            os_name = self.get_os_info(ip)
+            row.append(os_name)
+        table.add_row(*row)
+        time.sleep(0.1)  # Small delay to ensure table updates
+
     def wifiUsers(self, include_os_info=False):
         table = Table(expand=True, title='WIFI USERS', box=box.SQUARE_DOUBLE_HEAD, show_lines=True)
         table.add_column("Device", style='cyan')
@@ -68,30 +77,19 @@ class networkInfo:
                 self.Nmap.scan(hosts=self.subnet, arguments='-O -T4 -F')  # Fast scan
             else:
                 self.Nmap.scan(hosts=self.subnet, arguments='-T4 -F')  # Fast scan 
+            
+            threads = []
             for ip in self.Nmap.all_hosts():
                 if ip.endswith('.1') or ip.endswith('.255'):
                     continue
-                device_name = socket.getfqdn(ip)
-                device_name = '[red]Unknown' if device_name == ip else device_name
-                mac = getmac.get_mac_address(ip=ip)
-                row = [f"{device_name}", f"{ip}", f"{mac if mac else '[red]Unknown'}"]
-                if include_os_info:
-                    os_name = self.get_os_info(ip)
-                    row.append(os_name)
-                table.add_row(*row)
-                time.sleep(0.1)  # Small delay to ensure table updates
+                t = Thread(target=self.scan_ip, args=(ip, table, include_os_info))
+                threads.append(t)
+                t.start()
+            
+            for t in threads:
+                t.join()
 
-    def osInfo(self):
-        table = Table(expand=True, title='OS INFO', box=box.SQUARE_DOUBLE_HEAD)
-        table.add_column("Option", style='yellow')
-        table.add_column("Value", style='green')
-
-        os_name, os_version = platform.system(), platform.release()
-        table.add_row("OS Name", os_name)
-        table.add_row("OS Version", os_version)
-
-        with Live(table, refresh_per_second=1):
-            time.sleep(1)  # Small delay to ensure table updates
+    
 
 def result(subnet=None):
     return networkInfo(subnet=subnet)
@@ -115,7 +113,8 @@ def main():
 """)
     
     console.print("""
-[[green]+[/]] Note: Created by [link=https://github.com/DrDataYE]@DrDataYE[/link] from Telegram Channel [link=https://t.me/LinuxArabe]LinuxArabe[/link],The Tool version 1.0
+[[green]+[/]] Note: The Script Created by [link=https://github.com/DrDataYE]@DrDataYE[/link] from Telegram Channel [link=https://t.me/LinuxArabe]LinuxArabe[/link].
+[[green]+[/]] Tool version 1.0.
 """)
 
     
